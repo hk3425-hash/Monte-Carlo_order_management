@@ -23,9 +23,10 @@ import matplotlib.pyplot as plt
 from scipy.stats import chi2_contingency
 import streamlit as st
 
+import config
 import mc_helpers
 from mc_helpers import (
-    MARKETS,
+    MARKETS, AIAGENT_FILENAME,
     load_instrument, load_contract, resample_ohlcv, apply_rth_filter,
     compute_ranges, add_states, build_rolling_epdfs,
     epdf_from_array, fill_prob_from_pmf, kl_div, full_cond_epdf,
@@ -134,7 +135,7 @@ with st.sidebar:
     # Contract picker — only shown for Single contract mode
     contract_name: str | None = None
     if data_source == "Single contract":
-        data_dir = mc_helpers.DATA_ROOT / instrument
+        data_dir = config.DATA_ROOT / instrument
         csv_stems = sorted(
             f.stem for f in data_dir.glob("*.csv")
             if not f.stem.startswith("AIAgent")
@@ -152,17 +153,19 @@ with st.sidebar:
     k_dir  = int(st.number_input("K_DIR_STATES (direction)",  min_value=1, max_value=5, value=3))
     j_start = int(st.number_input("J_START (burn-in bars)", min_value=10, max_value=500, value=100))
 
+    st.sidebar.caption(f"Data root: `{config.DATA_ROOT}`")
+
 
 # ── Sync module globals ────────────────────────────────────────────────────────
-# Helper functions read LAM, M/N/K_*_STATES, MAX_SPREADS directly from the
-# mc_helpers namespace; we keep them in sync with the sidebar values.
+# Helper functions read LAM, M/N/K_*_STATES, MAX_SPREADS from config at call
+# time; we keep config in sync with the sidebar values here.
 lam = 2.0 ** (-1.0 / half_life)
-mc_helpers.LAM          = lam
-mc_helpers.M_VOL_STATES = m_vol
-mc_helpers.N_SIG_STATES = n_sig
-mc_helpers.K_DIR_STATES = k_dir
-mc_helpers.J_START      = j_start
-mc_helpers.MAX_SPREADS  = MAX_SPREADS
+config.LAM          = lam
+config.M_VOL_STATES = m_vol
+config.N_SIG_STATES = n_sig
+config.K_DIR_STATES = k_dir
+config.J_START      = j_start
+config.MAX_SPREADS  = MAX_SPREADS
 eps = MARKETS[instrument]["tick"]
 
 
@@ -172,9 +175,9 @@ eps = MARKETS[instrument]["tick"]
 def _run_continuous(instrument, tau, half_life, m_vol, n_sig, k_dir, j_start):
     """Sticky-roll chained pipeline. Cache key covers all inputs."""
     _lam = 2.0 ** (-1.0 / half_life)
-    mc_helpers.LAM = _lam; mc_helpers.M_VOL_STATES = m_vol
-    mc_helpers.N_SIG_STATES = n_sig; mc_helpers.K_DIR_STATES = k_dir
-    mc_helpers.J_START = j_start; mc_helpers.MAX_SPREADS = MAX_SPREADS
+    config.LAM = _lam; config.M_VOL_STATES = m_vol
+    config.N_SIG_STATES = n_sig; config.K_DIR_STATES = k_dir
+    config.J_START = j_start; config.MAX_SPREADS = MAX_SPREADS
 
     _eps = MARKETS[instrument]["tick"]
     df_1m = load_instrument(instrument, verbose=False)
@@ -190,12 +193,12 @@ def _run_continuous(instrument, tau, half_life, m_vol, n_sig, k_dir, j_start):
 def _run_single(instrument, contract_name, tau, half_life, m_vol, n_sig, k_dir, j_start):
     """Single-contract pipeline (no chaining). Cache key includes contract_name."""
     _lam = 2.0 ** (-1.0 / half_life)
-    mc_helpers.LAM = _lam; mc_helpers.M_VOL_STATES = m_vol
-    mc_helpers.N_SIG_STATES = n_sig; mc_helpers.K_DIR_STATES = k_dir
-    mc_helpers.J_START = j_start; mc_helpers.MAX_SPREADS = MAX_SPREADS
+    config.LAM = _lam; config.M_VOL_STATES = m_vol
+    config.N_SIG_STATES = n_sig; config.K_DIR_STATES = k_dir
+    config.J_START = j_start; config.MAX_SPREADS = MAX_SPREADS
 
     _eps = MARKETS[instrument]["tick"]
-    path = mc_helpers.DATA_ROOT / instrument / f"{contract_name}.csv"
+    path = config.DATA_ROOT / instrument / f"{contract_name}.csv"
     df_1m = load_contract(path)
     df_t  = resample_ohlcv(df_1m, tau, verbose=False)
     df_t  = apply_rth_filter(df_t, instrument, tau, verbose=False)
@@ -208,7 +211,7 @@ def _run_single(instrument, contract_name, tau, half_life, m_vol, n_sig, k_dir, 
 @st.cache_data(show_spinner=False)
 def _load_aiagent(instrument, tau):
     """Load AIAgent CSV → (raw agent DataFrame with net_pos, τ-min OHLCV with ranges)."""
-    path = mc_helpers.DATA_ROOT / instrument / f"AIAgent_{instrument}.csv"
+    path = config.DATA_ROOT / instrument / AIAGENT_FILENAME[instrument]
     agent = pd.read_csv(path, header=None,
                         names=["date_serial", "hour", "minute", "price", "net_pos"])
     agent["date"] = pd.to_datetime(agent["date_serial"] - 2, unit="D",
@@ -276,7 +279,7 @@ with tab1:
             with st.spinner("Loading AIAgent data…"):
                 agent_raw, agent_tau = _load_aiagent(instrument, tau)
         except FileNotFoundError:
-            st.error(f"AIAgent_{instrument}.csv not found in the data directory.")
+            st.error(f"{AIAGENT_FILENAME[instrument]} not found under {config.DATA_ROOT / instrument}")
             st.stop()
 
         # ── Price & Position ──────────────────────────────────────────────────
@@ -859,7 +862,8 @@ with tab2:
                         agent_raw, _ = _load_aiagent(instrument, tau)
                     except FileNotFoundError:
                         st.error(
-                            f"AIAgent_{instrument}.csv not found in the data directory."
+                            f"{AIAGENT_FILENAME[instrument]} not found under "
+                            f"{config.DATA_ROOT / instrument}"
                         )
                         st.stop()
                     pos_tau = (agent_raw["net_pos"]
@@ -877,13 +881,21 @@ with tab2:
                     sig_series = pos_delta[mask].apply(lambda x: 1 if x > 0 else -1)
 
                 # ── Three-method loop ─────────────────────────────────────
+                # For the AIAgent path, cap max_offset at 10 so Method C reads
+                # exclusively from the walk-forward fp_rdn_*/fp_rup_* columns
+                # pre-computed in bt — never from the frozen final ePDF tables.
+                _max_offset_ec = (
+                    min(max_offset, 10)
+                    if not signal_source.startswith("EWMA")
+                    else max_offset
+                )
                 recs = []
                 for idx, row in eval_bt.iterrows():
                     sig = int(sig_series.loc[idx])
                     rA = _exec_market(sig, row, eps)
                     rB = _exec_naive(sig, row, eps, ell_fixed)
                     rC = _exec_epdf(sig, row, eps, _epdf_Rup_ec, _epdf_Rdn_ec,
-                                    max_offset, min_fill_prob)
+                                    _max_offset_ec, min_fill_prob)
                     recs.append({
                         "pnl_A": rA["pnl"],
                         "pnl_B": rB["pnl"], "filled_B": rB["filled"],
@@ -1004,3 +1016,9 @@ with tab2:
                 "if no ell qualifies the bar is skipped (PnL=0); if placed but missed, "
                 "same −0.5 tick fallback applies. All methods exit at bar close."
             )
+            if not signal_source.startswith("EWMA"):
+                st.caption(
+                    "Method C uses walk-forward fill probabilities snapshotted at each "
+                    "AIAgent trade's bar — the ePDF at bar t reflects only data strictly "
+                    "prior to t, with no look-ahead from future continuous bars."
+                )

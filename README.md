@@ -19,9 +19,55 @@ source venv/bin/activate    # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Configure data path
+## Data setup
 
-Edit `DATA_ROOT` in `mc_helpers.py` to point to your local copy of the futures data folder.
+The application expects futures data organized as:
+
+```
+data/
+  Nasdaq/
+    NQH20.csv
+    NQM20.csv
+    ...
+    AIAgent_Nasdaq.csv
+  Gold/
+    GCG24.csv
+    ...
+    AIAgent_Gold.csv
+  ...
+```
+
+Each instrument folder holds per-contract 1-minute OHLCV CSVs (no header row, columns: timestamp, open, high, low, close, volume) and an optional AIAgent CSV.
+
+The application looks for the data folder in this order:
+
+1. `$MC_DATA_ROOT` environment variable (if set and path exists)
+2. `data/` folder inside the project directory (`monte-carlo-app/data/`)
+3. A hardcoded fallback path (`/Users/cemokutan/Documents/Monte_Carlo/project/data`)
+
+**Quickest setup:** drop the course-provided data into `monte-carlo-app/data/`.
+
+**Alternative:** set the environment variable before launching:
+```bash
+export MC_DATA_ROOT=/path/to/your/data
+streamlit run app.py
+```
+
+The resolved data path is displayed at the bottom of the sidebar for verification.
+
+### AIAgent filenames
+
+Each instrument's AIAgent file uses a short name regardless of the full instrument key:
+
+| Instrument | AIAgent file |
+|---|---|
+| Nasdaq | `AIAgent_Nasdaq.csv` |
+| Gold | `AIAgent_Gold.csv` |
+| German Bunds - German Government Bonds | `AIAgent_Bunds.csv` |
+| EuroStoxx | `AIAgent_EuroStoxx.csv` |
+| GBP - British Pound | `AIAgent_GBPUSD.csv` |
+| HeatingOil | `AIAgent_HeatingOil.csv` |
+| JPY - Japanese Yen | `AIAgent_JPY.csv` |
 
 ## Run
 
