@@ -1,0 +1,17 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+.Rhistory
+.claude/
+*.html
+
+# Heavy data — keep only the bundled sample
+data/*
+!data/sample/
+!data/sample/**
+
+# Working documents (briefing, notes)
+\# BRIEF CLAUDE CODE*.md
