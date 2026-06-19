@@ -32,8 +32,9 @@ MIN_BAR_FRAC = 0.90
 def _resolve_data_root() -> Path:
     """Locate the data directory in priority order:
     1. MC_DATA_ROOT environment variable
-    2. data/ folder inside this project directory
-    3. Original hardcoded path (fallback for original author's setup)
+    2. data/ folder inside this project directory, if it holds full instrument
+       subfolders (a complete local dataset dropped in by the user)
+    3. data/sample/ — the bundled Nasdaq sample shipped with the repo
     """
     env_path = os.environ.get("MC_DATA_ROOT")
     if env_path:
@@ -41,10 +42,18 @@ def _resolve_data_root() -> Path:
         if p.exists():
             return p
     here = Path(__file__).parent
-    local = here / "data"
-    if local.exists() and any(local.iterdir()):
-        return local
-    return Path("/Users/cemokutan/Documents/Monte_Carlo/project/data")
+    full = here / "data"
+    if full.exists() and any(
+        child.is_dir() and child.name != "sample" for child in full.iterdir()
+    ):
+        return full
+    sample = full / "sample"
+    if sample.exists() and any(sample.iterdir()):
+        return sample
+    raise FileNotFoundError(
+        "No data directory found. Set MC_DATA_ROOT or place data under ./data "
+        "(a Nasdaq sample ships in ./data/sample)."
+    )
 
 
 DATA_ROOT = _resolve_data_root()
