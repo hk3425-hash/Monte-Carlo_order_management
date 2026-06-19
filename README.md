@@ -308,12 +308,3 @@ strategy.
 - Generalize the pipeline cleanly across all seven instruments.
 - Add a short reproducible "executive summary" notebook running on `data/sample/`.
 
----
-
-## Attribution
-
-Joint project for Columbia IEOR4703, developed collaboratively by **Hadrien
-Kremer** and **Cem Okutan**. There is no division of labor — the work was done
-jointly. The bulk of the commit history sits under Cem Okutan's account
-(`cemokutann`) because the work was done on his machine; this cleanup pass is
-committed separately under Hadrien Kremer's identity.
