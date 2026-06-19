@@ -9,6 +9,14 @@ This project builds and evaluates a state-conditioned empirical PDF (ePDF) frame
 
 The implementation is a Streamlit dashboard split into two parts — regime analysis and execution comparison — backed by strictly walk-forward (no look-ahead) estimation.
 
+<p align="center">
+  <img src="figures/dashboard_tab1.png" width="80%" alt="Regime Analysis dashboard">
+  <br>
+  <img src="figures/dashboard_tab2.png" width="80%" alt="Execution Comparison dashboard">
+  <br>
+  <em>Streamlit dashboard — Tab 1 (regime analysis) and Tab 2 (execution comparison).</em>
+</p>
+
 ---
 
 ## What it does
@@ -76,7 +84,7 @@ monte-carlo-app/
 ├── pipeline.py               # prepare_market (single-call wrapper over data + features + epdf)
 ├── mc_helpers.py             # Backward-compat shim: re-exports everything from the above modules
 ├── analysis.py               # Stand-alone analysis script (extracted from notebook __main__ block)
-├── monte_carlo_project_v5.ipynb  # Original Jupyter notebook
+├── monte_carlo_project.ipynb  # Original Jupyter notebook
 ├── requirements.txt
 ├── data/                     # Futures data (see Data layout below)
 └── figures/                  # Output PDFs and PNGs written by analysis.py
@@ -99,6 +107,13 @@ Core dependencies (pinned in `requirements.txt`): `streamlit==1.57.0`, `pandas==
 ---
 
 ## Data layout
+
+> **Bundled sample.** Only a truncated **Nasdaq** sample ships with the repo,
+> under `data/sample/Nasdaq/` (the three NQ contracts truncated to the first
+> ~40k 1-min bars each, plus the full AIAgent CSV — ~10 MB total). It is enough
+> to run the Nasdaq pipeline end-to-end out of the box. The full multi-market,
+> multi-year dataset is not included; point `MC_DATA_ROOT` at it to reproduce the
+> figures in `figures/`.
 
 The application expects one subfolder per instrument, each containing per-contract 1-minute OHLCV CSVs and an optional AIAgent CSV:
 
@@ -143,10 +158,13 @@ data/
 `config._resolve_data_root()` tries three locations in order:
 
 1. `$MC_DATA_ROOT` environment variable (if set and path exists)
-2. `data/` folder inside the project directory (used automatically when data is present there)
-3. Hardcoded fallback: `/Users/cemokutan/Documents/Monte_Carlo/project/data`
+2. `data/` folder inside the project directory, **if** it holds full instrument
+   subfolders (a complete local dataset dropped in by the user)
+3. `data/sample/` — the bundled Nasdaq sample shipped with this repo (the
+   default, so the pipeline runs out of the box)
 
-The resolved path is displayed at the bottom of the sidebar. To use a custom path:
+If none resolve, a `FileNotFoundError` is raised. The resolved path is displayed
+at the bottom of the sidebar. To use a custom path:
 
 ```bash
 export MC_DATA_ROOT=/path/to/your/data
@@ -209,6 +227,15 @@ Opens at `http://localhost:8501`.
 
 ## Methodological notes
 
+> **Terminology note.** "Monte Carlo" refers to the course context
+> (Columbia IEOR4703 — Monte Carlo Simulation Methods). The method implemented
+> here is **empirical conditional-density estimation**, not trajectory
+> simulation. We estimate a regime-conditioned empirical PDF of intra-bar price
+> ranges, turn it into limit-order fill probabilities, and use those to choose a
+> placement offset. The defining properties are that estimation is **strictly
+> causal (no look-ahead)** and validated **walk-forward** — every fill
+> probability used at bar *j* is built only from data prior to *j*.
+
 **Signal as placeholder.** The EWMA mean-reversion and trend-following signals are synthetic; they are included only to provide a directional input so the three execution methods can be compared on a controlled set of bars. The project's analytical contribution is the execution layer — the decision of *where* to place a limit given a signal, not the signal itself.
 
 **Walk-forward correctness.** `build_rolling_epdfs` updates count tables *after* querying probabilities at each bar. Every entry in the `bt` DataFrame reflects only data prior to that bar. On the AIAgent execution path, Method C reads exclusively from these per-bar `fp_rdn_*`/`fp_rup_*` columns, with `MAX_OFFSET` capped at 10 (the number of pre-computed columns). This prevents any reference to the frozen final ePDF tables, which would embed future observations.
@@ -218,3 +245,75 @@ Opens at `http://localhost:8501`.
 **No price back-adjustment.** Contract rolls introduce a small price discontinuity (the cost-of-carry spread). The data is not back-adjusted because the downstream statistics ($R$, $R_{\text{up}}$, $R_{\text{dn}}$) are intra-bar quantities that are invariant to constant price shifts. The roll bar itself may have an inflated range; it is retained but treated as a noise observation by the ePDF.
 
 **OOS calibration vs. execution evaluation.** The OOS calibration view in Tab 1 intentionally uses the frozen final ePDF tables (all contract history) applied to AIAgent bars. This measures whether the model converges to well-calibrated probabilities over the full training period. It is a diagnostic, not a trading simulation. The execution comparison in Tab 2 uses the walk-forward `bt` probabilities to avoid look-ahead.
+
+---
+
+## Results
+
+All figures below are for **Nasdaq, τ = 15 min**, regenerated by `python analysis.py`.
+
+### Conditioning recovers information vs. a naive baseline
+![KL divergence grid](figures/fig07_kl_grid_Nasdaq.png)
+
+KL divergence between each regime-conditioned fill-probability distribution and
+the unconditional naive baseline, per (volume, volatility, prior-direction) cell.
+Divergence is largest in low-volume / low-volatility cells and collapses toward
+zero in high-volume cells — regime conditioning carries the most information
+precisely in the quiet states where naive placement is most miscalibrated.
+
+### State-conditioned placement beats the naive offset out-of-sample
+![Optimal placement](figures/fig11_oos_optimal_placement_Nasdaq.png)
+
+*Left:* expected gain `k · ε · P(fill | state)` as a function of offset `k`, by
+volatility state — the gain-maximizing offset `k*` widens with volatility
+(`k* = 19, 22, 24` ticks for the low/mid/high volatility states).
+*Right:* out-of-sample realized expected gain; the state-conditioned offset
+exceeds the naive baseline across all three volatility states (`3.99 vs 2.94`,
+`4.04 vs 3.18`, `4.86 vs 3.32`), widest in the high-volatility state.
+
+### Walk-forward execution backtest
+![Execution comparison](figures/fig_exec_comparison_Nasdaq.png)
+
+Cumulative PnL (ticks) of the three execution policies on the EWMA signal, with
+the per-bar PnL distribution on the right. **Caveat:** the EWMA signal here is a
+placeholder used to generate controlled directional bars (see *Limitations*) —
+this panel demonstrates the walk-forward execution machinery, not a tradable
+strategy.
+
+> Numeric values (`k*` per state, OOS realized gains) are taken from
+> `figures/tab02_oos_optimal_placement_Nasdaq.csv` and
+> `figures/tab01_conditional_fill_probabilities_Nasdaq.csv`, written by
+> `analysis.py` on the full continuous contract history.
+
+---
+
+## Limitations & next steps
+
+**Limitations (honest scope).**
+- **Signals are placeholders.** The EWMA signals exist only to generate a
+  controlled set of directional bars so the three execution policies can be
+  compared. The contribution is the *execution layer*, not the signal.
+- **No price back-adjustment across rolls.** Harmless for the intra-bar range
+  statistics used here (invariant to constant shifts) but would matter for any
+  inter-bar return model.
+- **Fallback is an approximation.** An unfilled limit falls back to a
+  market-at-close fill with a flat 0.5-tick penalty — a stand-in for half-spread
+  slippage, not a microstructure-accurate cost model.
+- **Single-instrument depth.** The pipeline is fully exercised on Nasdaq; the
+  other six markets are less explored.
+
+**Next steps.**
+- Replace the placeholder signal with a genuine signal layer and evaluate the
+  ePDF placement on top of it.
+- Generalize the pipeline cleanly across all seven instruments.
+- Add a short reproducible "executive summary" notebook running on `data/sample/`.
+
+---
+
+## Attribution
+
+Joint project for Columbia IEOR4703, developed collaboratively by **Hadrien
+Kremer** and **Cem Okutan**. There is no division of labor — the work was done
+jointly. The bulk of the commit history sits under Cem Okutan's account
+(`cemokutann`) because the work was done on his machine; this cleanup pass is
+committed separately under Hadrien Kremer's identity.
